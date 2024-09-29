@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <title>Professor JARVIS</title>
+    {% load static %}
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 50px;
+        }
+        video, canvas {
+            border: 1px solid #ccc;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+        }
+        #status {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        #answer {
+            margin-top: 20px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Professor I.S.A.A.C.</h1>
+    <video id="video" width="320" height="240" autoplay playsinline></video>
+    <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+    <div>
+        <label>
+            <input type="checkbox" id="sendImageCheckbox" checked>
+            Enviar Imagem
+        </label>
+    </div>
+    <div>
+        <button id="startBtn">Iniciar Gravação</button>
+        <button id="stopBtn">Parar Gravação e Enviar</button>
+    </div>
+    <p id="status"></p>
+    <p id="answer"></p>
+    <audio id="responseAudio" controls></audio>
+
+    <!-- Include your JavaScript file -->
+    <script src="{% static 'teacher/script.js' %}"></script>
+</body>
+</html>
