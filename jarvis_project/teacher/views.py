@@ -1,31 +1,27 @@
 from django.shortcuts import render
-
-
 import base64
-from io import BytesIO
-from PIL import Image
 from django.http import JsonResponse
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
-from gtts import gTTS
 import os
+import io
 import tempfile
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 import time
-import httpx
 
 def index(request):
-    return render(request, 'index.html')  # Ensure 'index.html' is in teacher/templates/
+    return render(request, 'index.html')
 
 @csrf_exempt
 def process_input(request):
     api_key = settings.OPENAI_API_KEY
+    client = OpenAI(api_key=api_key)
     if request.method == 'POST':
         # Retrieve audio and image data from the POST request
         audio_file = request.FILES.get('audio')
-        image_data = request.POST.get('image')  # This may be None if not sent
+        image_data = request.POST.get('image')
 
         # Check if the audio file was provided
         if not audio_file:
@@ -38,7 +34,7 @@ def process_input(request):
         if image_data:
             try:
                 # Split the base64 string to remove the header and decode the image data
-                image_data = image_data.split(',')[1]  # Assumes "data:image/jpeg;base64," format
+                image_data = image_data.split(',')[1]
                 image_bytes = base64.b64decode(image_data)
                 print("Imagem recebida e decodificada com sucesso.")
             except Exception as e:
@@ -59,10 +55,9 @@ def process_input(request):
         # Initialize transcription variables
         transcription = ''
         attempts = 0
-        max_attempts = 3  # Maximum number of retry attempts
+        max_attempts = 3
 
         # Use OpenAI to transcribe the audio with retry logic
-        client = OpenAI(api_key=api_key)
         while attempts < max_attempts:
             try:
                 with open(temp_audio_file.name, 'rb') as audio_file_for_transcription:
@@ -73,15 +68,14 @@ def process_input(request):
                     )
                     transcription = transcription_response.text
                     print(f"Transcrição do áudio: {transcription}")
-                break  # Exit the loop if transcription is successful
+                break
             except Exception as e:
                 attempts += 1
                 print(f"Erro na tentativa {attempts} de transcrição. Exception: {str(e)}")
-                time.sleep(5)  # Wait for 5 seconds before retrying
+                time.sleep(5)
         else:
-            # If all attempts fail, clean up and return an error
             print("Falha ao transcrever após 3 tentativas.")
-            os.unlink(temp_audio_file.name)  # Delete the temporary audio file
+            os.unlink(temp_audio_file.name)
             return JsonResponse({'error': 'Erro ao transcrever o áudio.'}, status=500)
 
         # Delete the temporary audio file after transcription
@@ -91,11 +85,21 @@ def process_input(request):
         if not transcription:
             return JsonResponse({'error': 'Não foi possível transcrever o áudio.'}, status=500)
 
+        # Retrieve conversation history from the session
+        conversation_history = request.session.get('conversation_history', '')
+        # Append the user's message to the conversation history
+        conversation_history += f"Aluno: {transcription}\n"
+
+        # Limit conversation history to prevent exceeding model context length
+        max_history_length = 2000
+        if len(conversation_history) > max_history_length:
+            conversation_history = conversation_history[-max_history_length:]
+
         # Format the question using Langchain
         try:
             langchain_client = ChatOpenAI(model='gpt-4o-mini', temperature=0.7)
 
-            # Prepare the question with image (if provided) and transcription using Langchain's HumanMessage format
+            # Prepare the question with image and conversation history
             inputs = [
                 HumanMessage(
                     content=[
@@ -109,9 +113,9 @@ def process_input(request):
                                 Se o usuário estiver no caminho certo, elogie e continue oferecendo orientações para que ele avance na solução.
                                 Explique como abordar e resolver o problema, passo a passo, sem entregar a solução final.
                                 Dê respostas curtas e objetivas, sempre buscando orientar o usuário.
-                                
+
                                 Conversa atual:
-                                Aluno: {transcription}
+                                {conversation_history}
                                 Imagem: { "Imagem fornecida" if image_bytes else "Nenhuma imagem fornecida." }
                             """
                         },
@@ -122,36 +126,73 @@ def process_input(request):
                             }
                         }
                     ]
-                )
+                ) 
             ]
-            print(inputs)
 
             # Obtain response from ChatGPT through Langchain
-            response = langchain_client.stream(inputs)
-            answer = ''
-            for resp in response:
-                answer += resp.content
+            print(inputs)
+            response = langchain_client(inputs)
+            answer = response.content
             print(f"Resposta do ChatGPT: {answer}")
 
         except Exception as e:
             print(f"Erro ao obter resposta do ChatGPT com Langchain: {e}")
             return JsonResponse({'error': 'Erro ao processar a resposta do ChatGPT.'}, status=500)
 
-        # Generate speech from the answer using gTTS
+        # Append the AI's response to the conversation history
+        conversation_history += f"Professor: {answer}\n"
+        # Save the updated conversation history back into the session
+        request.session['conversation_history'] = conversation_history
+
+        # Generate speech from the answer using your OpenAI TTS function
         try:
-            tts = gTTS(text=answer, lang='pt')
-            audio_response_file = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
-            tts.save(audio_response_file.name)
-            with open(audio_response_file.name, 'rb') as f:
-                audio_content = f.read()
+            audio_content = speak(answer, client)
             audio_base64 = base64.b64encode(audio_content).decode('utf-8')
-            os.unlink(audio_response_file.name)
             print("Áudio de resposta gerado com sucesso.")
         except Exception as e:
             audio_base64 = ''
             print(f"Erro ao gerar áudio da resposta: {e}")
+            return JsonResponse({'error': 'Erro ao gerar áudio da resposta.'}, status=500)
 
-        # Return the response as JSON
-        return JsonResponse({'answer': answer, 'audio_base64': audio_base64})
+        # Return the response as JSON, including transcription
+        return JsonResponse({'transcription': transcription, 'answer': answer, 'audio_base64': audio_base64})
     else:
         return JsonResponse({'error': 'Método de solicitação inválido.'}, status=405)
+
+@csrf_exempt
+def reset_conversation(request):
+    if request.method == 'POST':
+        request.session['conversation_history'] = ''
+        return JsonResponse({'success': True})
+    else:
+        return JsonResponse({'success': False})
+
+def speak(text, client):
+    try:
+        # Using OpenAI API for text-to-speech
+        with client.audio.speech.with_streaming_response.create(
+            model="tts-1",
+            voice="onyx",
+            response_format="mp3",
+            speed=1.3,
+            input=text
+        ) as response:
+            silence_threshold = 0.01
+            stream_start = False
+            audio_buffer = io.BytesIO()  # Buffer to store audio data
+
+            for chunk in response.iter_bytes(chunk_size=1024):
+                if stream_start:
+                    audio_buffer.write(chunk)  # Write audio chunks to buffer
+                else:
+                    if max(chunk) > silence_threshold:
+                        audio_buffer.write(chunk)
+                        stream_start = True
+
+            # Return the audio content from the buffer
+            audio_buffer.seek(0)  # Move to the start of the buffer
+            return audio_buffer.read()
+
+    except Exception as e:
+        print(f"Erro durante a síntese de fala: {e}")
+        raise e  # Rethrow the error to be handled by the view
